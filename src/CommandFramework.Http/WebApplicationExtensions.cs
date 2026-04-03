@@ -40,6 +40,9 @@ public static class WebApplicationExtensions
                 stored.Select(e => deserializeEvent(e.EventType, e.Payload)),
                 handler.Apply);
 
+            if (state == null)
+                return Results.NotFound();
+
             return Results.Ok(state);
         });
 

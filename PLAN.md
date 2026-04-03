@@ -115,14 +115,14 @@ Second command in a batch has a payload that fails deserialization. Verify the f
 ### T6 — Concurrency — two simultaneous appends to the same stream ✅
 Fire two requests in parallel targeting the same aggregate. Assert one succeeds and one returns a concurrency error. Verify the stream has the correct number of events.
 
-### T7 — Reaction dispatches to another aggregate inside the transaction
+### T7 — Reaction dispatches to another aggregate inside the transaction ✅
 Wire two handlers together. A reaction on aggregate A dispatches a command to aggregate B inside the same transaction. Verify both streams are written atomically — if either fails, both roll back.
 
-### T8 — Malformed JSON body (HTTP layer)
+### T8 — Malformed JSON body (HTTP layer) ✅
 `POST /orders/commands` with invalid JSON. Should return 400.
 
-### T9 — GET where fold returns null despite events existing
+### T9 — GET where fold returns null despite events existing ✅
 Aggregate where `Apply` always returns null even with events. `GET /{name}/{id}` should return 404.
 
-### T10 — Concurrent writes to read model
+### T10 — Concurrent writes to read model ✅
 Fire many parallel commands targeting different aggregates simultaneously. Verify `order_summaries` is consistent and has one row per aggregate afterward.

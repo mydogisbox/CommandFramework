@@ -1,7 +1,14 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using CommandFramework.Core;
 using CommandFramework.Http;
 using CommandFramework.Postgres;
+using Dapper;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Xunit;
 
 namespace CommandFramework.Tests;
@@ -182,17 +189,12 @@ public class EventProcessorTests : IAsyncLifetime
         var processor = new EventProcessor([
             EventReaction.On<CounterIncremented>(async (e, tx) =>
             {
-                var conn = ((Npgsql.NpgsqlTransaction)tx).Connection!;
-                await using var cmd = new Npgsql.NpgsqlCommand(@"
+                var conn = ((NpgsqlTransaction)tx).Connection!;
+                await conn.ExecuteAsync(@"
                     INSERT INTO outbox (stream_id, event_type, payload, created_at)
-                    VALUES (@streamId, @eventType, @payload::jsonb, @createdAt)", conn, (Npgsql.NpgsqlTransaction)tx);
-
-                cmd.Parameters.AddWithValue("streamId",  streamId);
-                cmd.Parameters.AddWithValue("eventType", nameof(CounterIncremented));
-                cmd.Parameters.AddWithValue("payload",   JsonSerializer.Serialize(e, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-                cmd.Parameters.AddWithValue("createdAt", DateTimeOffset.UtcNow);
-
-                await cmd.ExecuteNonQueryAsync();
+                    VALUES (@streamId, @eventType, @payload::jsonb, @createdAt)",
+                    new { streamId, eventType = nameof(CounterIncremented), payload = JsonSerializer.Serialize(e, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }), createdAt = DateTimeOffset.UtcNow },
+                    tx);
             })
         ]);
 
@@ -209,12 +211,9 @@ public class EventProcessorTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
-        await using var conn = new Npgsql.NpgsqlConnection(_db.ConnectionString);
+        await using var conn = new NpgsqlConnection(_db.ConnectionString);
         await conn.OpenAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM outbox WHERE stream_id = @streamId";
-        cmd.Parameters.AddWithValue("streamId", streamId);
-        var count = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+        var count = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM outbox WHERE stream_id = @streamId", new { streamId });
         Assert.Equal(1, count);
     }
 
@@ -228,17 +227,12 @@ public class EventProcessorTests : IAsyncLifetime
         var processor = new EventProcessor([
             EventReaction.On<CounterIncremented>(async (e, tx) =>
             {
-                var conn = ((Npgsql.NpgsqlTransaction)tx).Connection!;
-                await using var cmd = new Npgsql.NpgsqlCommand(@"
+                var conn = ((NpgsqlTransaction)tx).Connection!;
+                await conn.ExecuteAsync(@"
                     INSERT INTO outbox (stream_id, event_type, payload, created_at)
-                    VALUES (@streamId, @eventType, @payload::jsonb, @createdAt)", conn, (Npgsql.NpgsqlTransaction)tx);
-
-                cmd.Parameters.AddWithValue("streamId",  streamId);
-                cmd.Parameters.AddWithValue("eventType", nameof(CounterIncremented));
-                cmd.Parameters.AddWithValue("payload",   JsonSerializer.Serialize(e, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-                cmd.Parameters.AddWithValue("createdAt", DateTimeOffset.UtcNow);
-
-                await cmd.ExecuteNonQueryAsync();
+                    VALUES (@streamId, @eventType, @payload::jsonb, @createdAt)",
+                    new { streamId, eventType = nameof(CounterIncremented), payload = JsonSerializer.Serialize(e, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }), createdAt = DateTimeOffset.UtcNow },
+                    tx);
             })
         ]);
 
@@ -252,12 +246,9 @@ public class EventProcessorTests : IAsyncLifetime
 
         Assert.True(result.IsError);
 
-        await using var conn = new Npgsql.NpgsqlConnection(_db.ConnectionString);
+        await using var conn = new NpgsqlConnection(_db.ConnectionString);
         await conn.OpenAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM outbox WHERE stream_id = @streamId";
-        cmd.Parameters.AddWithValue("streamId", streamId);
-        var count = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+        var count = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM outbox WHERE stream_id = @streamId", new { streamId });
         Assert.Equal(0, count);
     }
 
@@ -409,9 +400,176 @@ public class EdgeCaseTests : IAsyncLifetime
         Assert.Single(stored);
     }
 
+    [Fact]
+    public async Task Cross_aggregate_reaction_writes_both_streams_atomically()
+    {
+        var streamBId = $"counters/{Guid.NewGuid()}";
+
+        var processor = new EventProcessor([
+            EventReaction.On<CounterIncremented>(async (e, tx) =>
+            {
+                var npgsqlTx = (NpgsqlTransaction)tx;
+                await npgsqlTx.Connection!.ExecuteAsync(@"
+                    INSERT INTO events (stream_id, sequence, event_type, payload, occurred_at)
+                    VALUES (@streamId, 0, @eventType, @payload::jsonb, @occurredAt)",
+                    new { streamId = streamBId, eventType = nameof(CounterIncremented), payload = $"{{\"by\":{e.By}}}", occurredAt = DateTimeOffset.UtcNow },
+                    npgsqlTx);
+            })
+        ]);
+
+        var handler = new AggregateHandler<CounterState, CounterEvent>(
+            CounterAggregate.Definition,
+            new PostgresEventStore(_db.ConnectionString),
+            "counters",
+            processor);
+
+        var aggregateIdA = Guid.NewGuid().ToString();
+
+        var result = await handler.ExecuteAsync(
+            new CommandBatch(aggregateIdA, [new("Increment", Json(new { by = 5 }))]),
+            CounterAggregate.DeserializeCommand,
+            CounterAggregate.DeserializeEvent);
+
+        Assert.True(result.IsSuccess);
+
+        var store = new PostgresEventStore(_db.ConnectionString);
+        var streamAEvents = await store.LoadAsync($"counters/{aggregateIdA}");
+        var streamBEvents = await store.LoadAsync(streamBId);
+
+        Assert.Single(streamAEvents);
+        Assert.Single(streamBEvents);
+    }
+
+    [Fact]
+    public async Task Cross_aggregate_reaction_rolls_back_both_streams_on_failure()
+    {
+        var streamBId = $"counters/{Guid.NewGuid()}";
+
+        var processor = new EventProcessor([
+            EventReaction.On<CounterIncremented>(async (e, tx) =>
+            {
+                var npgsqlTx = (NpgsqlTransaction)tx;
+                await npgsqlTx.Connection!.ExecuteAsync(@"
+                    INSERT INTO events (stream_id, sequence, event_type, payload, occurred_at)
+                    VALUES (@streamId, 0, @eventType, @payload::jsonb, @occurredAt)",
+                    new { streamId = streamBId, eventType = nameof(CounterIncremented), payload = $"{{\"by\":{e.By}}}", occurredAt = DateTimeOffset.UtcNow },
+                    npgsqlTx);
+                throw new InvalidOperationException("downstream write failed");
+            })
+        ]);
+
+        var handler = new AggregateHandler<CounterState, CounterEvent>(
+            CounterAggregate.Definition,
+            new PostgresEventStore(_db.ConnectionString),
+            "counters",
+            processor);
+
+        var aggregateIdA = Guid.NewGuid().ToString();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handler.ExecuteAsync(
+                new CommandBatch(aggregateIdA, [new("Increment", Json(new { by = 5 }))]),
+                CounterAggregate.DeserializeCommand,
+                CounterAggregate.DeserializeEvent));
+
+        var store = new PostgresEventStore(_db.ConnectionString);
+        var streamAEvents = await store.LoadAsync($"counters/{aggregateIdA}");
+        var streamBEvents = await store.LoadAsync(streamBId);
+
+        Assert.Empty(streamAEvents);
+        Assert.Empty(streamBEvents);
+    }
+
     private static JsonElement Json(object value)
         => JsonSerializer.SerializeToElement(value, new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
+}
+
+[Collection("Database")]
+public class HttpLayerTests : IAsyncLifetime
+{
+    public async Task InitializeAsync() => await _db.InitializeAsync();
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    [Fact]
+    public async Task Malformed_json_body_returns_400()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddSingleton<IEventStore>(new StubEventStore());
+
+        var handler = new AggregateHandler<CounterState, CounterEvent>(
+            CounterAggregate.Definition,
+            new StubEventStore(),
+            "counters");
+
+        var app = builder.Build();
+        app.MapAggregate("counters", handler,
+            CounterAggregate.DeserializeCommand,
+            CounterAggregate.DeserializeEvent);
+
+        await app.StartAsync();
+
+        var client = app.GetTestClient();
+        var response = await client.PostAsync("/counters/commands",
+            new StringContent("this is not json", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        await app.StopAsync();
+    }
+
+    [Fact]
+    public async Task Get_returns_404_when_fold_produces_null()
+    {
+        var aggregateId = Guid.NewGuid().ToString();
+        var streamId = $"nullcounters/{aggregateId}";
+
+        // Seed one event directly so the stream exists
+        var store = new PostgresEventStore(_db.ConnectionString);
+        await store.AppendAsync(streamId, -1, [("CounterIncremented", "{\"by\":1}")]);
+
+        // Apply always returns null — simulates a tombstoned aggregate
+        var nullApply = new AggregateDefinition<CounterState, CounterEvent>(
+            Dispatch: CounterAggregate.Dispatch,
+            Apply: (_, _) => null!);
+
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddSingleton<IEventStore>(store);
+
+        var handler = new AggregateHandler<CounterState, CounterEvent>(
+            nullApply, store, "nullcounters");
+
+        var app = builder.Build();
+        app.MapAggregate("nullcounters", handler,
+            CounterAggregate.DeserializeCommand,
+            CounterAggregate.DeserializeEvent);
+
+        await app.StartAsync();
+
+        var client = app.GetTestClient();
+        var response = await client.GetAsync($"/nullcounters/{aggregateId}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        await app.StopAsync();
+    }
+
+    private readonly TestDatabase _db = new();
+
+    private sealed class StubEventStore : IEventStore
+    {
+        public Task<Result<IReadOnlyList<StoredEvent>>> AppendAsync(
+            string streamId, int expectedSequence,
+            IEnumerable<(string eventType, string payload)> events,
+            EventProcessor? processor = null,
+            IEnumerable<object>? domainEvents = null)
+            => throw new NotImplementedException();
+
+        public Task<IReadOnlyList<StoredEvent>> LoadAsync(string streamId)
+            => throw new NotImplementedException();
+    }
 }

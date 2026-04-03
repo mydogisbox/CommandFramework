@@ -10,4 +10,8 @@
     <ProjectReference Include="../../src/CommandFramework.Http/CommandFramework.Http.csproj" />
     <ProjectReference Include="../../src/CommandFramework.Postgres/CommandFramework.Postgres.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+  </ItemGroup>
 </Project>
