@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/CommandFramework.Sample/CommandFramework.Sample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/CommandFramework.Core/CommandFramework.Core.csproj" />
+    <Project Path="src/CommandFramework.Http/CommandFramework.Http.csproj" />
+    <Project Path="src/CommandFramework.Postgres/CommandFramework.Postgres.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CommandFramework.Tests/CommandFramework.Tests.csproj" />
+  </Folder>
+</Solution>

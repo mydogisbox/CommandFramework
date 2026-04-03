@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/CommandFramework.Core/CommandFramework.Core.csproj" />
+    <ProjectReference Include="../../src/CommandFramework.Http/CommandFramework.Http.csproj" />
+    <ProjectReference Include="../../src/CommandFramework.Postgres/CommandFramework.Postgres.csproj" />
+  </ItemGroup>
+</Project>
