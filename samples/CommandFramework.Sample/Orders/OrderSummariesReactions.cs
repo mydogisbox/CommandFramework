@@ -2,6 +2,7 @@ using System.Text.Json;
 using CommandFramework.Core;
 using Dapper;
 using Npgsql;
+using static CommandFramework.Sample.Orders.OrderEvent;
 
 namespace CommandFramework.Sample.Orders;
 

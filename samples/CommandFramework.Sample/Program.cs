@@ -23,8 +23,8 @@ var handler = new AggregateHandler<OrderState, OrderEvent>(
 app.MapAggregate(
     name: "orders",
     handler: handler,
-    deserializeCommand: OrderAggregate.DeserializeCommand,
-    deserializeEvent: OrderAggregate.DeserializeEvent);
+    deserializeCommand: ReflectionDeserializer.ForCommands<OrderCommands>(),
+    deserializeEvent: ReflectionDeserializer.ForEvents<OrderEvent>());
 
 app.MapGet("/orders", async () =>
 {

@@ -1,5 +1,6 @@
-using System.Text.Json;
 using CommandFramework.Core;
+using static CommandFramework.Sample.Orders.OrderEvent;
+using static CommandFramework.Sample.Orders.OrderCommands;
 
 namespace CommandFramework.Sample.Orders;
 
@@ -13,16 +14,21 @@ public record OrderState(
 
 // ── Events ────────────────────────────────────────────────────────────────────
 
-public abstract record OrderEvent;
-public record OrderPlaced(string OrderId, string CustomerId, List<string> Items) : OrderEvent;
-public record OrderCancelled(string OrderId, string Reason) : OrderEvent;
-public record OrderShipped(string OrderId, string TrackingNumber) : OrderEvent;
+public abstract record OrderEvent
+{
+    public record OrderPlaced(string OrderId, string CustomerId, List<string> Items) : OrderEvent;
+    public record OrderCancelled(string OrderId, string Reason) : OrderEvent;
+    public record OrderShipped(string OrderId, string TrackingNumber) : OrderEvent;
+}
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-public record PlaceOrder(string CustomerId, List<string> Items);
-public record CancelOrder(string AggregateId, string Reason);
-public record ShipOrder(string AggregateId, string TrackingNumber);
+public abstract record OrderCommands
+{
+    public record PlaceOrder(string CustomerId, List<string> Items) : OrderCommands;
+    public record CancelOrder(string AggregateId, string Reason) : OrderCommands;
+    public record ShipOrder(string AggregateId, string TrackingNumber) : OrderCommands;
+}
 
 // ── Aggregate ─────────────────────────────────────────────────────────────────
 
@@ -85,32 +91,6 @@ public static class OrderAggregate
             CancelOrder cmd => Handle(state!, cmd),
             ShipOrder cmd => Handle(state!, cmd),
             _ => $"Unknown command '{command.GetType().Name}'."
-        };
-
-    // ── Boundary functions ────────────────────────────────────────────────────
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true
-    };
-
-    public static object DeserializeCommand(string type, JsonElement payload)
-        => type switch
-        {
-            nameof(PlaceOrder) => payload.Deserialize<PlaceOrder>(JsonOptions)!,
-            nameof(CancelOrder) => payload.Deserialize<CancelOrder>(JsonOptions)!,
-            nameof(ShipOrder) => payload.Deserialize<ShipOrder>(JsonOptions)!,
-            _ => throw new InvalidOperationException($"Unknown command type '{type}'.")
-        };
-
-    public static OrderEvent DeserializeEvent(string type, string payload)
-        => type switch
-        {
-            nameof(OrderPlaced) => JsonSerializer.Deserialize<OrderPlaced>(payload, JsonOptions)!,
-            nameof(OrderCancelled) => JsonSerializer.Deserialize<OrderCancelled>(payload, JsonOptions)!,
-            nameof(OrderShipped) => JsonSerializer.Deserialize<OrderShipped>(payload, JsonOptions)!,
-            _ => throw new InvalidOperationException($"Unknown event type '{type}'.")
         };
 
     public static readonly AggregateDefinition<OrderState, OrderEvent> Definition = new(
